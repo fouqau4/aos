@@ -1,0 +1,5 @@
+git init
+git remote add aos https://github.com/fouqau4/aos.git
+git config --global user.email "fouqau4@gmail.com"
+git config --global user.name "fouqau4"
+
