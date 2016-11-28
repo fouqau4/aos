@@ -2,14 +2,26 @@
 #include <cstdio>
 #include <iostream>
 
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+
+#include <pthread.h>
+
+#include <unistd.h>
 using namespace std;
 
-void run_srv();
+// define maximum of clients as n*3, n clients for each group
+#define MAX_CLIENT_NUM 8*3
 
-
+void run_srv( uint16_t srv_port);
+void *srv_to_cli( void *args );
+/*
+{
+	puts("HAHA");
+}
+*/
 int main()
 {
 	system("clear");
@@ -24,11 +36,13 @@ int main()
 
 	cin >> option;
 	
+	uint16_t srv_port;
 	
 	switch( option )
 	{
 	case 0:
-		run_srv();
+		cin >> srv_port;
+		run_srv( srv_port );
 		break;
 	default:
 		cout << " * Please enter 0 or 1 " << endl;
@@ -36,7 +50,7 @@ int main()
 
 	return 0;
 }
-void run_srv()
+void run_srv( uint16_t srv_port )
 {
     system( "clear; cd srv; pwd" );
     cout << " [S] Run as Server " << endl;
@@ -44,7 +58,7 @@ void run_srv()
     //create listenning socket
     struct sockaddr_in srv, cli;
     int listen_fd;
-    int cli_len = sizeof( cli );
+    socklen_t cli_len = sizeof( cli );
 
     if( ( listen_fd = socket( AF_INET, SOCK_STREAM, IPPROTO_TCP ) ) == -1 )
     {
@@ -55,7 +69,7 @@ void run_srv()
 
     srv.sin_family = AF_INET;
     srv.sin_addr.s_addr = htonl( INADDR_ANY );
-    srv.sin_port = htons( atoi( srv_port ) );
+    srv.sin_port = htons( srv_port );
 
     //bind
     if( bind( listen_fd, ( struct sockaddr* ) &srv, sizeof( srv ) ) < 0 )
@@ -74,6 +88,8 @@ void run_srv()
     }
 
     int temp_fd;
+	uint32_t current_clients_num = 0;
+	pthread_t threadId_of_cli[MAX_CLIENT_NUM];
 
     while( 1 )
     {
@@ -84,7 +100,22 @@ void run_srv()
             perror("");
             exit( 1 );
         }
-
+		
+		//create threads
+		if( ( pthread_create( &threadId_of_cli[current_clients_num], NULL, srv_to_cli, ( void * )NULL ) ) != 0 )
+		{
+			fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
+			perror("");
+			exit( 1 );
+		}
+		
     }
+
+	close( listen_fd );
+}
+
+void *stv_to_cli( void *args )
+{
+	puts( "HAHAHA" );
 }
 
