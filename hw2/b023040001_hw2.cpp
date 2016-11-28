@@ -16,12 +16,12 @@ using namespace std;
 #define MAX_CLIENT_NUM 8*3
 
 void run_srv( uint16_t srv_port);
-void *srv_to_cli( void *args );
-/*
+void *srv_to_cli( void *args )
+
 {
 	puts("HAHA");
 }
-*/
+
 int main()
 {
 	system("clear");
@@ -112,10 +112,5 @@ void run_srv( uint16_t srv_port )
     }
 
 	close( listen_fd );
-}
-
-void *stv_to_cli( void *args )
-{
-	puts( "HAHAHA" );
 }
 
