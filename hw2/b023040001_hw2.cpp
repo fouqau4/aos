@@ -16,27 +16,115 @@ using namespace std;
 
 // define maximum of clients as n*3, n clients for each group
 #define MAX_CLIENT_NUM 8*3
-#define MAX_BUFFER_LEN 128+2
+#define MAX_BUFFER_LEN 128+3
+#define MAX_USERNAME_LEN 20
+#define MAX_FILENAME_LEN 30
+#define MAX_COMMAND_LEN 20
+#define MAX_PERMISSION_LEN 6+1
+
+pthread_mutex_t lock_user_list;
 
 void run_srv( uint16_t srv_port );
 void run_cli( string srv_ip, uint16_t srv_port );
+void write_all( int fd, char buffer_write[] );
+int read_all( int fd, char buffer_read[] );
+int identify_command( char *command );
+
 void *srv_to_cli( void *args )
 {
-	int fd = *( int* )args;
-	system( "cd srv; pwd" );
+	int fd = *( int* )args;	
 	
-	char buffer_write[MAX_BUFFER_LEN], buffer_read[MAX_BUFFER_LEN];
-	int msg_len, current_receive_len, total_receive_len;
+	char buffer_write[MAX_BUFFER_LEN], buffer_read[MAX_BUFFER_LEN], username[MAX_USERNAME_LEN];
 
-	while( ( total_receive_len = read( fd, buffer_read, MAX_BUFFER_LEN ) ) != 0 )
+	//user login
+	FILE *user_list;
+
+	read_all( fd, buffer_read );
+	strncpy( username, buffer_read + 3, MAX_USERNAME_LEN - 1 );
+
+	int find = 0;
+	pthread_mutex_lock( &lock_user_list );
+	if( ( user_list = fopen( "srv/user_list", "a+" ) ) == NULL )
 	{
-		sscanf( buffer_read, "%2x", &msg_len );
-		while( total_receive_len < msg_len + 2 )
+		fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
+	    perror("");
+		pthread_mutex_unlock( &lock_user_list );
+    	exit( 1 );
+	}
+	else
+	{
+		rewind( user_list );
+		while( ( fscanf( user_list, "%s", buffer_read ) ) == 1 )
 		{
-			current_receive_len = read( fd, buffer_read + total_receive_len, MAX_BUFFER_LEN - total_receive_len );
-			total_receive_len += current_receive_len;
+			if( strncmp( buffer_read, username, strlen( username ) ) == 0 )
+			{
+				cout << " [S] Old user : " << username << endl;
+				find = 1;
+				break;
+			}
 		}
-		cout << msg_len << " " << buffer_read << endl;
+		if( !find )
+		{
+			fseek( user_list, 0, SEEK_END );
+			fprintf( user_list, "%s\n", username );
+			fclose( user_list );
+			cout << " [S] New user : " << username << endl;
+			memset( buffer_read, 0, MAX_BUFFER_LEN );
+			sprintf( buffer_read, "cd cli; mkdir %s", username );
+			system( buffer_read );
+		}
+	}
+	pthread_mutex_unlock( &lock_user_list );
+
+	//identify the command
+	char *temp, command[MAX_COMMAND_LEN], file[MAX_FILENAME_LEN], permission[MAX_PERMISSION_LEN];
+	int file_mask;
+
+	while( read_all( fd, buffer_read ) != 0 )
+	{
+		puts( buffer_read + 3 );
+		temp = strtok( buffer_read + 3, " \t\n\0" );
+		if( temp != NULL )
+		{
+			memset( command, 0, MAX_COMMAND_LEN );
+			strncpy( command, temp, strlen( temp ) );
+			switch( identify_command( command ) )
+			{
+			//new
+			case 0:
+				//filename
+				temp = strtok( NULL, " \t\n\0" );
+				if( temp != NULL )
+				{
+					memset( file, 0, MAX_FILENAME_LEN );
+					strncpy( file, temp, strlen( temp ) );
+					//permission
+					temp = strtok( NULL, " \t\n\0" );
+					if( temp != NULL )
+					{
+						memset( permission, 0, MAX_PERMISSION_LEN );
+						strncpy( permission, temp, strlen( temp ) );
+
+						for( int temp_i = 0 ; temp_i < strlen( permission ) ; temp_i++ )
+						{
+							// here   permission mask
+						}
+
+						memset( buffer_read, 0, MAX_BUFFER_LEN );
+						sprintf( buffer_read, "touch cli/%s/%s && ch", username, file );
+					}
+				}
+				break;
+			default :
+				cout << " [S] Unknown command " << endl;
+			}
+		}
+		while( temp != NULL )
+		{
+			puts( temp );
+			temp = strtok( NULL, " \t\n\0" );
+		}
+		
 	}
 }
 
@@ -56,6 +144,9 @@ int main()
 	
 	uint16_t srv_port;
 	string srv_ip;
+
+	pthread_mutex_init( &lock_user_list, NULL );
+
 	switch( option )
 	{
 	case 0:
@@ -103,19 +194,76 @@ void run_cli( string srv_ip, uint16_t srv_port )
 		exit( 1 );
 	}
 
-	char buffer_write[MAX_BUFFER_LEN], buffer_read[MAX_BUFFER_LEN];
-	
-	getchar();
-	fgets( buffer_write + 3, MAX_BUFFER_LEN - 1, stdin );
-	( buffer_write + 3 )[strlen( buffer_write + 3 ) - 1] = '\0';
-	sprintf( buffer_write, "%2x", strlen( buffer_write + 3 ) );
-	for( int i = 0 ; i < strlen( buffer_write + 3 ) + 3; i++)
-		cout<<buffer_write[i]<<" ";
+	char buffer_write[MAX_BUFFER_LEN], buffer_read[MAX_BUFFER_LEN], username[MAX_USERNAME_LEN];
 
-//	while( write( fd, buffer_write, ) )
+	getchar();
+
+	cout << " [C] Username : ";
+	fgets( username, MAX_USERNAME_LEN - 1, stdin );
+	
+	sprintf( buffer_write + 3, "%s", username );
+	write_all( fd, buffer_write );
+	while( fgets( buffer_write + 3, MAX_BUFFER_LEN - 1, stdin ) )
+	{
+		write_all( fd, buffer_write );
+		memset( buffer_write, 0, MAX_BUFFER_LEN );
+	}
 	puts( "HI I'm Client.");
 
 	close( fd );
+}
+
+void write_all( int fd, char buffer_write[] )
+{
+	int msg_len, writen_len, current_writen_len;
+
+	( buffer_write + 3 )[strlen( buffer_write + 3 ) - 1] = '\0';
+    msg_len = strlen( buffer_write + 3 );
+    sprintf( buffer_write, "%2x", msg_len );
+    msg_len += 3;
+
+    writen_len = 0;
+    while( ( current_writen_len = write( fd, buffer_write + writen_len, msg_len - writen_len ) ) < msg_len - writen_len )
+    {
+        writen_len += current_writen_len;
+    }
+
+}
+
+int read_all( int fd, char buffer_read[] )
+{
+	memset( buffer_read, 0, MAX_BUFFER_LEN );
+	int total_receive_len, msg_len, current_receive_len;
+	if( ( total_receive_len = read( fd, buffer_read, MAX_BUFFER_LEN ) ) != 0 )
+    {
+        sscanf( buffer_read, "%2x", &msg_len );
+        while( total_receive_len < msg_len + 2 )
+        {
+            current_receive_len = read( fd, buffer_read + total_receive_len, MAX_BUFFER_LEN - total_receive_len );
+            total_receive_len += current_receive_len;
+        }
+        // cout << msg_len << " " << buffer_read << endl << buffer_read + 3<< endl;
+		return 1;
+    }
+	else
+		return 0;
+
+}
+
+int identify_command( char *command )
+{
+	if( strncmp( command, "new", 3 ) == 0 )
+		return 0;
+	else if( strncmp( command, "read", 4 ) == 0 )
+		return 1;
+	else if( strncmp( command, "write", 5 ) == 0 )
+        return 2;
+	else if( strncmp( command, "change", 6 ) == 0 )
+        return 3;
+	else if( strncmp( command, "information", 11 ) == 0 )
+        return 4;
+	else
+		return -1
 }
 
 void run_srv( uint16_t srv_port )
