@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <iostream>
 
@@ -25,15 +26,17 @@ void *srv_to_cli( void *args )
 	system( "cd srv; pwd" );
 	
 	char buffer_write[MAX_BUFFER_LEN], buffer_read[MAX_BUFFER_LEN];
-	int msg_len, receive_len;
+	int msg_len, current_receive_len, total_receive_len;
 
-	while( ( receive_len = read( fd, buffer_read, MAX_BUFFER_LEN ) ) != 0 )
+	while( ( total_receive_len = read( fd, buffer_read, MAX_BUFFER_LEN ) ) != 0 )
 	{
 		sscanf( buffer_read, "%2x", &msg_len );
-		while( receive_len < msg_len + 2 )
+		while( total_receive_len < msg_len + 2 )
 		{
-			// here YOYO
+			current_receive_len = read( fd, buffer_read + total_receive_len, MAX_BUFFER_LEN - total_receive_len );
+			total_receive_len += current_receive_len;
 		}
+		cout << msg_len << " " << buffer_read << endl;
 	}
 }
 
@@ -66,6 +69,7 @@ int main()
 		cout << " * Please enter the Server's port : ";
 		cin >> srv_port;
 		run_cli( srv_ip, srv_port );
+		break;
 	default:
 		cout << " * Please enter 0 or 1 " << endl;
 	}
@@ -99,6 +103,16 @@ void run_cli( string srv_ip, uint16_t srv_port )
 		exit( 1 );
 	}
 
+	char buffer_write[MAX_BUFFER_LEN], buffer_read[MAX_BUFFER_LEN];
+	
+	getchar();
+	fgets( buffer_write + 3, MAX_BUFFER_LEN - 1, stdin );
+	( buffer_write + 3 )[strlen( buffer_write + 3 ) - 1] = '\0';
+	sprintf( buffer_write, "%2x", strlen( buffer_write + 3 ) );
+	for( int i = 0 ; i < strlen( buffer_write + 3 ) + 3; i++)
+		cout<<buffer_write[i]<<" ";
+
+//	while( write( fd, buffer_write, ) )
 	puts( "HI I'm Client.");
 
 	close( fd );
