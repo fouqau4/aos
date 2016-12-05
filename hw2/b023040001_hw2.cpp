@@ -42,7 +42,7 @@ void *srv_to_cli( void *args )
 	read_all( fd, buffer_read );
 	strncpy( username, buffer_read + 3, MAX_USERNAME_LEN - 1 );
 
-	int find = 0;
+	int find = 0, group;
 	pthread_mutex_lock( &lock_user_list );
 	if( ( user_list = fopen( "srv/user_list", "a+" ) ) == NULL )
 	{
@@ -54,23 +54,28 @@ void *srv_to_cli( void *args )
 	else
 	{
 		rewind( user_list );
-		while( ( fscanf( user_list, "%s", buffer_read ) ) == 1 )
+		while( ( fscanf( user_list, "%d %s", &group, buffer_read ) ) == 2 )
 		{
 			if( strncmp( buffer_read, username, strlen( username ) ) == 0 )
 			{
 				cout << " [S] Old user : " << username << endl;
 				find = 1;
+
+				memset( buffer_write, 0, MAX_BUFFER_LEN );
+				sprintf( buffer_write + 3, "%d", group );
+				write_all( fd, buffer_write );
 				break;
 			}
 		}
 		if( !find )
 		{
+
 			fseek( user_list, 0, SEEK_END );
-			fprintf( user_list, "%s\n", username );
+			fprintf( user_list, "%d %s\n", group, username );
 			fclose( user_list );
 			cout << " [S] New user : " << username << endl;
 			memset( buffer_read, 0, MAX_BUFFER_LEN );
-			sprintf( buffer_read, "cd cli; mkdir %s", username );
+			sprintf( buffer_read, "rm -rf cli/%s; cd cli; mkdir %s", username, username );
 			system( buffer_read );
 		}
 	}
@@ -104,14 +109,11 @@ void *srv_to_cli( void *args )
 					{
 						memset( permission, 0, MAX_PERMISSION_LEN );
 						strncpy( permission, temp, strlen( temp ) );
-
-						for( int temp_i = 0 ; temp_i < strlen( permission ) ; temp_i++ )
-						{
-							// here   permission mask
-						}
+						permission[6] = '\0';
 
 						memset( buffer_read, 0, MAX_BUFFER_LEN );
-						sprintf( buffer_read, "touch cli/%s/%s && ch", username, file );
+						sprintf( buffer_read, "cd srv; touch %s ;echo %s %s %d > .%s", file, permission, username, group, file );
+						system( buffer_read );
 					}
 				}
 				break;
@@ -203,6 +205,39 @@ void run_cli( string srv_ip, uint16_t srv_port )
 	
 	sprintf( buffer_write + 3, "%s", username );
 	write_all( fd, buffer_write );
+
+	int group;
+	read_all( fd, buffer_read );
+	if( strncmp( buffer_read, "old", 3 ) == 0 )
+	{
+        cout << " [S] Please select your group : " << endl
+             << "   0 : AOS_students " << endl
+             << "   1 : CSE_students " << endl
+             << "   2 : other_students " << endl;
+        cin >> group;
+
+		memset( buffer_write, 0, MAX_BUFFER_LEN );
+		sprintf( buffer_write + 3, "%d", group );
+		write_all( fd, buffer_write );
+	}
+	else
+	{
+		sscanf( buffer_read, "%d", &group );
+	}
+	
+	switch( group )
+	{
+	case 0:
+		cout << " [C] you are at the group : AOS_students " << endl;
+		break;
+	case 1:
+		cout << " [C] you are at the group : CSE_students " << endl;
+		break;
+	case 2:
+		cout << " [C] you are at the group : other_students " << endl;
+		break;
+	}
+
 	while( fgets( buffer_write + 3, MAX_BUFFER_LEN - 1, stdin ) )
 	{
 		write_all( fd, buffer_write );
@@ -263,7 +298,7 @@ int identify_command( char *command )
 	else if( strncmp( command, "information", 11 ) == 0 )
         return 4;
 	else
-		return -1
+		return -1;
 }
 
 void run_srv( uint16_t srv_port )

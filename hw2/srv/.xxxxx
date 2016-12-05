@@ -1,0 +1,1 @@
+rwrwrw cube 0
