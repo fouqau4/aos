@@ -73,11 +73,18 @@ void *srv_to_cli( void *args )
 		}
 		if( !find )
 		{
+			memset( buffer_write, 0, MAX_BUFFER_LEN );
+			sprintf( buffer_write + 3, "new " );
+			write_all( fd, buffer_write );
+
+			read_all( fd, buffer_read );
+			sscanf( buffer_read + 3, "%d", &group );
 
 			fseek( user_list, 0, SEEK_END );
 			fprintf( user_list, "%d %s\n", group, username );
 			fclose( user_list );
 			cout << " [S] New user : " << username << endl;
+			
 			memset( buffer_read, 0, MAX_BUFFER_LEN );
 			sprintf( buffer_read, "rm -rf cli/%s; cd cli; mkdir %s", username, username );
 			system( buffer_read );
@@ -86,10 +93,11 @@ void *srv_to_cli( void *args )
 	pthread_mutex_unlock( &lock_user_list );
 
 	//identify the command
-	char *temp, command[MAX_COMMAND_LEN], filename[MAX_FILENAME_LEN], permission[MAX_PERMISSION_LEN];
+	char *temp, command[MAX_COMMAND_LEN], filename[MAX_FILENAME_LEN], permission[MAX_PERMISSION_LEN], owner[MAX_USERNAME_LEN];
 	string current_file;
+	int access, file_group;
 	FILE *current_operated_file;
-
+	cout << " * Read command : ";
 	while( read_all( fd, buffer_read ) != 0 )
 	{
 		puts( buffer_read + 3 );
@@ -119,8 +127,24 @@ void *srv_to_cli( void *args )
 						memset( buffer_read, 0, MAX_BUFFER_LEN );
 						sprintf( buffer_read, "cd srv; touch %s ;echo %s %s %d > .%s", filename, permission, username, group, filename );
 						system( buffer_read );
+
+						memset( buffer_write, 0, MAX_BUFFER_LEN );
+						sprintf( buffer_write + 3, "ls -l srv/%s ", filename );
+						write_all( fd, buffer_write );
+					}
+					else
+					{
+						memset( buffer_write, 0, MAX_BUFFER_LEN );
+						sprintf( buffer_write +3, "echo [C] Wrong command " );
+						write_all( fd, buffer_write );
 					}
 				}
+				else
+                {
+                    memset( buffer_write, 0, MAX_BUFFER_LEN );
+                    sprintf( buffer_write +3, "echo [C] Wrong command " );
+                    write_all( fd, buffer_write );
+                }
 				break;
 			//read
 			case 1:
@@ -132,10 +156,57 @@ void *srv_to_cli( void *args )
 					strncpy( filename, temp, strlen( temp ) );
 					current_file = filename;
 
-					pthread_mutex_lock( &lock_operated_file );
-					if( files_status[current_file] == '-' )
-						files_status[current_file] = 'r';
-					pthread_mutex_unlock( &lock_operated_file );
+					access = 0;
+
+					while( !access )
+					{
+						pthread_mutex_lock( &lock_operated_file );
+						switch( files_status[current_file] )
+						{
+						case 0:
+							files_status[current_file] = 'r';
+						case 'r':
+							access = 1;
+							break;
+						case 'w':
+							pthread_mutex_unlock( &lock_operated_file );
+							sleep( 1 );
+							continue;
+						}
+						pthread_mutex_unlock( &lock_operated_file );
+					}
+
+					memset( buffer_write, 0, MAX_BUFFER_LEN );
+					sprintf( buffer_write, "srv/.%s", filename );
+					if( ( current_operated_file = fopen( buffer_write, "r" ) ) == NULL )
+					{
+						fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
+				        perror("");
+				        exit( 1 );						
+					}
+
+					memset( permission, 0, MAX_PERMISSION_LEN );
+					memset( owner, 0, MAX_USERNAME_LEN );
+					fscanf( current_operated_file, "%s %s %d", permission, owner, &file_group );
+					fclose( current_operated_file );
+
+					if( ( ( strncmp( owner, username, strlen( username ) ) == 0 ) && ( permission[0] == 'r' ) ) ||
+						( ( file_group == group ) && ( permission[2] == 'r' ) ) ||
+						( permission[4] == 'r' ) )
+					{
+						memset( buffer_write, 0, MAX_BUFFER_LEN );
+						sprintf( buffer_write, "cp srv/%s cli/%s/%s", filename, username, filename );
+						system( buffer_write );
+
+						memset( buffer_write, 0, MAX_BUFFER_LEN );
+						sprintf( buffer_write + 3, "ls -l cli/%s/%s ", username, filename );
+						puts( buffer_write + 3 );
+						write_all( fd, buffer_write );
+					}
+					else
+					{
+						cout << " [S] You did not get the access permission ! " << endl;
+					}
 				}
 				break;
 			default :
@@ -229,13 +300,14 @@ void run_cli( string srv_ip, uint16_t srv_port )
 
 	int group;
 	read_all( fd, buffer_read );
-	if( strncmp( buffer_read, "old", 3 ) == 0 )
+	if( strncmp( buffer_read + 3, "new", 3 ) == 0 )
 	{
-        cout << " [S] Please select your group : " << endl
+        cout << " [C] Please select your group : " << endl
              << "   0 : AOS_students " << endl
              << "   1 : CSE_students " << endl
              << "   2 : other_students " << endl;
         cin >> group;
+		getchar();
 
 		memset( buffer_write, 0, MAX_BUFFER_LEN );
 		sprintf( buffer_write + 3, "%d", group );
@@ -263,6 +335,10 @@ void run_cli( string srv_ip, uint16_t srv_port )
 	{
 		write_all( fd, buffer_write );
 		memset( buffer_write, 0, MAX_BUFFER_LEN );
+
+		read_all( fd, buffer_read );
+		puts(buffer_read + 3);
+		system( buffer_read + 3 );
 	}
 	puts( "HI I'm Client.");
 
