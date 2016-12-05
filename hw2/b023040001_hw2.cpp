@@ -3,6 +3,7 @@
 #include <cstring>
 #include <string>
 #include <iostream>
+#include <map>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -22,7 +23,10 @@ using namespace std;
 #define MAX_COMMAND_LEN 20
 #define MAX_PERMISSION_LEN 6+1
 
+map< string, char > files_status;
+
 pthread_mutex_t lock_user_list;
+pthread_mutex_t lock_operated_file;
 
 void run_srv( uint16_t srv_port );
 void run_cli( string srv_ip, uint16_t srv_port );
@@ -82,8 +86,9 @@ void *srv_to_cli( void *args )
 	pthread_mutex_unlock( &lock_user_list );
 
 	//identify the command
-	char *temp, command[MAX_COMMAND_LEN], file[MAX_FILENAME_LEN], permission[MAX_PERMISSION_LEN];
-	int file_mask;
+	char *temp, command[MAX_COMMAND_LEN], filename[MAX_FILENAME_LEN], permission[MAX_PERMISSION_LEN];
+	string current_file;
+	FILE *current_operated_file;
 
 	while( read_all( fd, buffer_read ) != 0 )
 	{
@@ -101,8 +106,8 @@ void *srv_to_cli( void *args )
 				temp = strtok( NULL, " \t\n\0" );
 				if( temp != NULL )
 				{
-					memset( file, 0, MAX_FILENAME_LEN );
-					strncpy( file, temp, strlen( temp ) );
+					memset( filename, 0, MAX_FILENAME_LEN );
+					strncpy( filename, temp, strlen( temp ) );
 					//permission
 					temp = strtok( NULL, " \t\n\0" );
 					if( temp != NULL )
@@ -112,9 +117,25 @@ void *srv_to_cli( void *args )
 						permission[6] = '\0';
 
 						memset( buffer_read, 0, MAX_BUFFER_LEN );
-						sprintf( buffer_read, "cd srv; touch %s ;echo %s %s %d > .%s", file, permission, username, group, file );
+						sprintf( buffer_read, "cd srv; touch %s ;echo %s %s %d > .%s", filename, permission, username, group, filename );
 						system( buffer_read );
 					}
+				}
+				break;
+			//read
+			case 1:
+				//filename
+				temp = strtok( NULL, " \t\n\0" );
+				if( temp != NULL )
+				{
+					memset( filename, 0, MAX_FILENAME_LEN );
+					strncpy( filename, temp, strlen( temp ) );
+					current_file = filename;
+
+					pthread_mutex_lock( &lock_operated_file );
+					if( files_status[current_file] == '-' )
+						files_status[current_file] = 'r';
+					pthread_mutex_unlock( &lock_operated_file );
 				}
 				break;
 			default :
@@ -148,7 +169,7 @@ int main()
 	string srv_ip;
 
 	pthread_mutex_init( &lock_user_list, NULL );
-
+	pthread_mutex_init( &lock_operated_file, NULL );
 	switch( option )
 	{
 	case 0:
