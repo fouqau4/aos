@@ -23,7 +23,13 @@ using namespace std;
 #define MAX_COMMAND_LEN 20
 #define MAX_PERMISSION_LEN 6+1
 
-map< string, char > files_status;
+struct status_node
+{
+	char status;
+	int count;
+};
+
+map< string, struct status_node > files_status;
 
 pthread_mutex_t lock_user_list;
 pthread_mutex_t lock_operated_file;
@@ -161,11 +167,12 @@ void *srv_to_cli( void *args )
 					while( !access )
 					{
 						pthread_mutex_lock( &lock_operated_file );
-						switch( files_status[current_file] )
+						switch( files_status[current_file].status )
 						{
 						case 0:
-							files_status[current_file] = 'r';
+							files_status[current_file].status = 'r';
 						case 'r':
+							files_status[current_file].count++;
 							access = 1;
 							break;
 						case 'w':
@@ -202,10 +209,17 @@ void *srv_to_cli( void *args )
 						sprintf( buffer_write + 3, "ls -l cli/%s/%s ", username, filename );
 						puts( buffer_write + 3 );
 						write_all( fd, buffer_write );
+
+						pthread_mutex_lock( &lock_operated_file );
+						if( --files_status[current_file].count == 0 )
+							files_status[current_file].status = '-';
+						pthread_mutex_unlock( &lock_operated_file );
 					}
 					else
 					{
-						cout << " [S] You did not get the access permission ! " << endl;
+						memset( buffer_write, 0, MAX_BUFFER_LEN );
+						sprintf( buffer_write + 3, "echo \" [C] You did not get the access permission ! \"" );
+						write_all( fd, buffer_write );
 					}
 				}
 				else
@@ -228,24 +242,61 @@ void *srv_to_cli( void *args )
 					{
 						write_mode = temp[0];
 
-						access = 0;
-						current_file = filename;
-						while( !access )
+						memset( buffer_write, 0, MAX_BUFFER_LEN );
+						sprintf( buffer_write, "srv/.%s", filename );
+						if( ( current_operated_file = fopen( buffer_write, "r" ) ) == 0 )
 						{
-							pthread_mutex_lock( &lock_operated_file );
-							if( files_status[current_file] == '-' || files_status[current_file] == 0 )
+    	                    fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
+	                        perror("");
+                        	exit( 1 );
+                   		}
+
+						memset( owner, 0, MAX_USERNAME_LEN );
+						memset( permission, 0, MAX_PERMISSION_LEN );
+						fscanf( current_operated_file, "%s %s %d", permission, owner, &file_group );
+						fclose( current_operated_file );
+
+						if( ( ( strncmp( username, owner, strlen( owner ) ) == 0 ) && ( permission[1] == 'w' ) ) ||
+							( ( group == file_group ) && ( permission[3] == 'w' ) ) ||
+							( permission[5] == 'w' ) )
+						{
+							access = 0;
+							current_file = filename;
+							while( !access )
 							{
-		                        memset( buffer_write, 0, MAX_BUFFER_LEN );
-		                        sprintf( buffer_write, "cp cli/%s/%s ", username, filename );
-								
+								pthread_mutex_lock( &lock_operated_file );
+								if( files_status[current_file].status == '-' || files_status[current_file].status == 0 )
+								{
+									files_status[current_file].status = 'w';
+									pthread_mutex_unlock( &lock_operated_file );
+
+			                        memset( buffer_write, 0, MAX_BUFFER_LEN );
+									if( write_mode == 'o' )
+				                        sprintf( buffer_write, "cp cli/%s/%s srv", username, filename );
+									system( buffer_write );
+
+									memset( buffer_write, 0, MAX_BUFFER_LEN );
+									sprintf( buffer_write + 3, "ls -l srv/%s ", filename );
+									write_all( fd, buffer_write );
+
+									access = 1;
+									pthread_mutex_lock( &lock_operated_file );
+									files_status[current_file].status = '-';
+									pthread_mutex_unlock( &lock_operated_file );
+								}
+								else
+								{
+									pthread_mutex_unlock( &lock_operated_file );
+									sleep( 1 );
+									continue;
+								}
 							}
-							else
-							{
-								pthread_mutex_unlock( &lock_operated_file );
-								sleep( 1 );
-								continue;
-							}
-							pthread_mutex_unlock( &lock_operated_file );
+						}
+						else
+						{
+							memset( buffer_write, 0, MAX_BUFFER_LEN );
+							sprintf( buffer_write + 3, "echo \" [C] You did not get the permission ! \"" );
+							write_all( fd, buffer_write ); 
 						}
 					}
 					else
