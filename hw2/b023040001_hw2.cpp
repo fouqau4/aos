@@ -93,7 +93,7 @@ void *srv_to_cli( void *args )
 	pthread_mutex_unlock( &lock_user_list );
 
 	//identify the command
-	char *temp, command[MAX_COMMAND_LEN], filename[MAX_FILENAME_LEN], permission[MAX_PERMISSION_LEN], owner[MAX_USERNAME_LEN];
+	char *temp, command[MAX_COMMAND_LEN], filename[MAX_FILENAME_LEN], permission[MAX_PERMISSION_LEN], owner[MAX_USERNAME_LEN], write_mode;
 	string current_file;
 	int access, file_group;
 	FILE *current_operated_file;
@@ -208,6 +208,60 @@ void *srv_to_cli( void *args )
 						cout << " [S] You did not get the access permission ! " << endl;
 					}
 				}
+				else
+				{
+                    memset( buffer_write, 0, MAX_BUFFER_LEN );
+                    sprintf( buffer_write +3, "echo [C] Wrong command " );
+                    write_all( fd, buffer_write );
+				}
+				break;
+				//write
+				case 2:
+				temp = strtok( NULL, " \t\n\0" );
+				if( temp != NULL )
+				{
+					memset( filename, 0, MAX_FILENAME_LEN );
+					strncpy( filename, temp, strlen( temp ) );
+
+					temp = strtok( NULL, " \t\n\0" );
+					if( temp != NULL )
+					{
+						write_mode = temp[0];
+
+						access = 0;
+						current_file = filename;
+						while( !access )
+						{
+							pthread_mutex_lock( &lock_operated_file );
+							if( files_status[current_file] == '-' || files_status[current_file] == 0 )
+							{
+		                        memset( buffer_write, 0, MAX_BUFFER_LEN );
+		                        sprintf( buffer_write, "cp cli/%s/%s ", username, filename );
+								
+							}
+							else
+							{
+								pthread_mutex_unlock( &lock_operated_file );
+								sleep( 1 );
+								continue;
+							}
+							pthread_mutex_unlock( &lock_operated_file );
+						}
+					}
+					else
+					{
+        	            memset( buffer_write, 0, MAX_BUFFER_LEN );
+    	                sprintf( buffer_write +3, "echo [C] Wrong command " );
+	                    write_all( fd, buffer_write );
+					}
+				}
+				else
+                {
+                    memset( buffer_write, 0, MAX_BUFFER_LEN );
+                    sprintf( buffer_write +3, "echo [C] Wrong command " );
+                    write_all( fd, buffer_write );
+                }
+
 				break;
 			default :
 				cout << " [S] Unknown command " << endl;
