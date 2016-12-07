@@ -1,1 +1,1 @@
-rwrwrw cube 0
+rwrw-- cube 0

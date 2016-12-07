@@ -4,6 +4,7 @@
 #include <string>
 #include <iostream>
 #include <map>
+#include <queue>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -29,10 +30,60 @@ struct status_node
 	int count;
 };
 
+struct object
+{
+	char filename[MAX_FILENAME_LEN];
+	char permission;
+};
+
+class capability_list_node
+{
+public:
+	capability_list_node()
+	{
+		memset( username, 0, MAX_USERNAME_LEN );
+	}
+	char username[MAX_USERNAME_LEN];
+	int group;
+	deque<struct object> list;
+	void push( const char* filename, const char permission )
+	{
+		struct object temp;
+		memset( temp.filename, 0, MAX_FILENAME_LEN );
+		strncpy( temp.filename, filename, MAX_FILENAME_LEN - 1 );
+		temp.permission = permission;
+		list.push_back( temp );
+	}
+	int search( const char* target_file )
+	{
+		for( int i = 0 ; i < list.size() ; i++ )
+		{
+			if( strncmp( list[i].filename, target_file, strlen( list[i].filename ) ) == 0 )
+				return i;
+		}
+		return -1;
+	}
+	int myself( const char* name )
+	{
+		if( strncmp( name, username, strlen( name ) ) == 0 )
+			return 1;
+		return 0;
+	}
+	void set( const char* name, const int g )
+	{
+		memset( username, 0, MAX_USERNAME_LEN );
+		strncpy( username, name, MAX_USERNAME_LEN );
+		group = g;
+	}
+};
+
+class capability_list_node capability_list[MAX_CLIENT_NUM];
 map< string, struct status_node > files_status;
+int usernum;
 
 pthread_mutex_t lock_user_list;
 pthread_mutex_t lock_operated_file;
+pthread_mutex_t lock_fopen;
 
 void run_srv( uint16_t srv_port );
 void run_cli( string srv_ip, uint16_t srv_port );
@@ -52,7 +103,9 @@ void *srv_to_cli( void *args )
 	read_all( fd, buffer_read );
 	strncpy( username, buffer_read + 3, MAX_USERNAME_LEN - 1 );
 
-	int find = 0, group;
+	FILE *file, *file1;
+	char buffer[MAX_BUFFER_LEN];
+	int find = 0, group, temp_i;
 	pthread_mutex_lock( &lock_user_list );
 	if( ( user_list = fopen( "srv/user_list", "a+" ) ) == NULL )
 	{
@@ -94,6 +147,58 @@ void *srv_to_cli( void *args )
 			memset( buffer_read, 0, MAX_BUFFER_LEN );
 			sprintf( buffer_read, "rm -rf cli/%s; cd cli; mkdir %s", username, username );
 			system( buffer_read );
+
+			capability_list[usernum].set( username, group );
+
+			
+			if( ( ( file = popen( "cd srv;ls .[^.]*", "r" ) ) == 0 ) || ( ( file1 = popen( "cat `ls srv/.[^.]*`", "r" ) ) == 0 ) )
+		    {
+		        fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
+		        perror("");
+		        exit( 1 );
+		    }
+
+		    memset( buffer, 0, MAX_BUFFER_LEN );
+		    char temp_c;
+            while( fscanf( file, "%s", buffer ) == 1 )
+            {
+                    memset( buffer_write, 0, MAX_BUFFER_LEN );memset( buffer_read, 0, MAX_BUFFER_LEN );
+                    fscanf( file1, "%s %s %d", buffer_write, buffer_read, &temp_i );
+                    cout << buffer_write << " " << buffer_read << " " << temp_i << endl;
+                    temp_c = 0;
+                    if( capability_list[usernum].myself( buffer_read ) )
+                    {
+                        if( buffer_write[0] == 'r' && buffer_write[1] == 'w' )
+                            capability_list[usernum].push( buffer + 1, 'a' );
+                        else if( buffer_write[0] == 'r' )
+                            capability_list[usernum].push( buffer + 1, 'r');
+                        else if( buffer_write[1] == 'w' )
+                            capability_list[usernum].push( buffer + 1, 'w');
+                        else
+                            capability_list[usernum].push( buffer + 1, 'c');
+                    }
+                    if( capability_list[usernum].group == temp_i && !capability_list[usernum].myself( buffer_read ) )
+                    {
+                        if( buffer_write[2] == 'r' && buffer_write[3] == 'w' )
+                            capability_list[usernum].push( buffer + 1, 'a');
+                        else if( buffer_write[2] == 'r' )
+                            capability_list[usernum].push( buffer + 1, 'r');
+                        else if( buffer_write[3] == 'w' )
+                            capability_list[usernum].push( buffer + 1, 'w');
+                    }
+                    if( capability_list[usernum].group != temp_i )
+		            {
+          			    if( buffer_write[4] == 'r' && buffer_write[5] == 'w' )
+		                    capability_list[usernum].push( buffer + 1, 'a');
+           			    else if( buffer_write[4] == 'r' )
+		                    capability_list[usernum].push( buffer + 1, 'r');
+           			    else if( buffer_write[5] == 'w' )
+		                    capability_list[usernum].push( buffer + 1, 'w');
+           			}
+		    }
+			fclose( file );
+			fclose( file1 );
+			usernum++;
 		}
 	}
 	pthread_mutex_unlock( &lock_user_list );
@@ -111,7 +216,7 @@ void *srv_to_cli( void *args )
 		if( temp != NULL )
 		{
 			memset( command, 0, MAX_COMMAND_LEN );
-			strncpy( command, temp, strlen( temp ) );
+			strncpy( command, temp, MAX_COMMAND_LEN );
 			switch( identify_command( command ) )
 			{
 			//new
@@ -121,18 +226,57 @@ void *srv_to_cli( void *args )
 				if( temp != NULL )
 				{
 					memset( filename, 0, MAX_FILENAME_LEN );
-					strncpy( filename, temp, strlen( temp ) );
+					strncpy( filename, temp, MAX_FILENAME_LEN );
 					//permission
 					temp = strtok( NULL, " \t\n\0" );
 					if( temp != NULL )
 					{
 						memset( permission, 0, MAX_PERMISSION_LEN );
-						strncpy( permission, temp, strlen( temp ) );
+						strncpy( permission, temp, MAX_PERMISSION_LEN );
 						permission[6] = '\0';
 
 						memset( buffer_read, 0, MAX_BUFFER_LEN );
 						sprintf( buffer_read, "cd srv; touch %s ;echo %s %s %d > .%s", filename, permission, username, group, filename );
 						system( buffer_read );
+
+						for( int i = 0, pos = -1 ;  i < MAX_CLIENT_NUM ; i++ )
+						{
+							if( ( pos = capability_list[i].group != -1 ) )
+							{
+								if( capability_list[i].search( filename ) == -1 )
+								{
+									if( capability_list[i].myself( username ) )
+						            {
+						                if( permission[0] == 'r' && permission[1] == 'w' )
+                                            capability_list[i].push( filename, 'a' );
+                                        else if( permission[0] == 'r' )
+                                            capability_list[i].push( filename, 'r');
+                                        else if( permission[1] == 'w' )
+                                            capability_list[i].push( filename, 'w');
+                                        else
+                                            capability_list[i].push( filename, 'c');
+                                    }
+                                    if( capability_list[i].group == group && !capability_list[i].myself( username ) )
+                                    {
+                                        if( permission[2] == 'r' && permission[3] == 'w' )
+                                            capability_list[i].push( filename, 'a');
+                                        else if( permission[2] == 'r' )
+                                            capability_list[i].push( filename, 'r');
+                                        else if( permission[3] == 'w' )
+                                            capability_list[i].push( filename, 'w');
+                                    }
+                                    if( capability_list[i].group != group )
+                                    {
+                                        if( permission[4] == 'r' && permission[5] == 'w' )
+                                            capability_list[i].push( filename, 'a');
+                                        else if( permission[4] == 'r' )
+                                            capability_list[i].push( filename, 'r');
+                                        else if( permission[5] == 'w' )
+                                            capability_list[i].push( filename, 'w');
+                                    }
+								}
+							}
+						}
 
 						memset( buffer_write, 0, MAX_BUFFER_LEN );
 						sprintf( buffer_write + 3, "ls -l srv/%s ", filename );
@@ -159,48 +303,114 @@ void *srv_to_cli( void *args )
 				if( temp != NULL )
 				{
 					memset( filename, 0, MAX_FILENAME_LEN );
-					strncpy( filename, temp, strlen( temp ) );
+					strncpy( filename, temp, MAX_FILENAME_LEN );
 					current_file = filename;
 
-					access = 0;
-
-					while( !access )
-					{
-						pthread_mutex_lock( &lock_operated_file );
-						switch( files_status[current_file].status )
-						{
-						case 0:
-							files_status[current_file].status = 'r';
-						case 'r':
-							files_status[current_file].count++;
-							access = 1;
-							break;
-						case 'w':
-							pthread_mutex_unlock( &lock_operated_file );
-							sleep( 1 );
-							continue;
-						}
-						pthread_mutex_unlock( &lock_operated_file );
-					}
-
 					memset( buffer_write, 0, MAX_BUFFER_LEN );
-					sprintf( buffer_write, "srv/.%s", filename );
-					if( ( current_operated_file = fopen( buffer_write, "r" ) ) == NULL )
+                    sprintf( buffer_write, "srv/.%s", filename );
+					pthread_mutex_lock( &lock_fopen );
+                    if( ( current_operated_file = fopen( buffer_write, "r" ) ) == NULL )
+                    {
+                        fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
+                        perror("");
+                        exit( 1 );
+                    }
+
+                    memset( permission, 0, MAX_PERMISSION_LEN );
+                    memset( owner, 0, MAX_USERNAME_LEN );
+                    fscanf( current_operated_file, "%s %s %d", permission, owner, &file_group );
+                    fclose( current_operated_file );
+                    pthread_mutex_unlock( &lock_fopen );
+
+					for( int i = 0, pos = -1 ; i < MAX_CLIENT_NUM ; i++ )
 					{
-						fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
-				        perror("");
-				        exit( 1 );						
+						if( capability_list[i].group != -1 && capability_list[i].myself( username ) )
+						{
+							if( ( pos = capability_list[i].search( filename ) ) != -1 )
+							{
+								if( capability_list[i].list[pos].permission == 'a' || capability_list[i].list[pos].permission == 'r' )
+								{
+									access = 0;
+
+			                        while( !access )
+                        			{
+            			                pthread_mutex_lock( &lock_operated_file );
+			                            switch( files_status[current_file].status )
+                        			    {
+										case '-':
+            			                case 0:
+			                                files_status[current_file].status = 'r';
+                        			    case 'r':
+            			                    files_status[current_file].count++;
+			                                access = 1;
+                        			        break;
+            			                case 'c':
+			                            case 'w':
+                        			        pthread_mutex_unlock( &lock_operated_file );
+            			                    sleep( 1 );
+			                                continue;
+                        			    }
+            			                pthread_mutex_unlock( &lock_operated_file );
+			                        }
+
+                        			memset( buffer_write, 0, MAX_BUFFER_LEN );
+            			            sprintf( buffer_write, "cp srv/%s cli/%s/%s", filename, username, filename );
+			                        system( buffer_write );
+
+                        			memset( buffer_write, 0, MAX_BUFFER_LEN );
+            			            sprintf( buffer_write + 3, "ls -l cli/%s/%s ", username, filename );
+			                        puts( buffer_write + 3 );
+            			            write_all( fd, buffer_write );
+
+			                        pthread_mutex_lock( &lock_operated_file );
+			                        if( --files_status[current_file].count == 0 )
+            			                files_status[current_file].status = '-';
+			                        pthread_mutex_unlock( &lock_operated_file );
+								}
+								else
+								{
+                        			memset( buffer_write, 0, MAX_BUFFER_LEN );
+            			            sprintf( buffer_write + 3, "echo \" [C] You did not get the access permission ! \" " );
+			                        write_all( fd, buffer_write );
+								}
+							}
+							else
+                            {
+                                memset( buffer_write, 0, MAX_BUFFER_LEN );
+                                sprintf( buffer_write + 3, "echo \" [C] You did not get the access permission ! \" " );
+                                write_all( fd, buffer_write );
+                            }
+							break;
+						}
 					}
-
-					memset( permission, 0, MAX_PERMISSION_LEN );
-					memset( owner, 0, MAX_USERNAME_LEN );
-					fscanf( current_operated_file, "%s %s %d", permission, owner, &file_group );
-					fclose( current_operated_file );
-
+/*
 					if( ( ( strncmp( owner, username, strlen( username ) ) == 0 ) && ( permission[0] == 'r' ) ) ||
-						( ( file_group == group ) && ( permission[2] == 'r' ) ) ||
-						( permission[4] == 'r' ) )
-					{
+                        ( ( file_group == group ) && ( permission[2] == 'r' ) ) ||
+                        ( permission[4] == 'r' ) )
+                    {
+
+						access = 0;
+
+						while( !access )
+						{
+							pthread_mutex_lock( &lock_operated_file );
+							switch( files_status[current_file].status )
+							{
+							case 0:
+								files_status[current_file].status = 'r';
+							case 'r':
+								files_status[current_file].count++;
+								access = 1;
+								break;
+							case 'c':
+							case 'w':
+								pthread_mutex_unlock( &lock_operated_file );
+								sleep( 1 );
+								continue;
+							}
+							pthread_mutex_unlock( &lock_operated_file );
+						}
+
 						memset( buffer_write, 0, MAX_BUFFER_LEN );
 						sprintf( buffer_write, "cp srv/%s cli/%s/%s", filename, username, filename );
 						system( buffer_write );
@@ -220,7 +430,7 @@ void *srv_to_cli( void *args )
 						memset( buffer_write, 0, MAX_BUFFER_LEN );
 						sprintf( buffer_write + 3, "echo \" [C] You did not get the access permission ! \"" );
 						write_all( fd, buffer_write );
-					}
+					}*/
 				}
 				else
 				{
@@ -235,15 +445,68 @@ void *srv_to_cli( void *args )
 				if( temp != NULL )
 				{
 					memset( filename, 0, MAX_FILENAME_LEN );
-					strncpy( filename, temp, strlen( temp ) );
+					strncpy( filename, temp, MAX_FILENAME_LEN );
 
 					temp = strtok( NULL, " \t\n\0" );
 					if( temp != NULL )
 					{
 						write_mode = temp[0];
 
-						memset( buffer_write, 0, MAX_BUFFER_LEN );
+						for( int i = 0, pos = -1 ; i < MAX_CLIENT_NUM ; i++ )
+						{
+							if( capability_list[i].group != -1 && capability_list[i].myself( username ) && ( pos = capability_list[i].search( filename ) ) != -1 )
+							{
+								if( capability_list[i].list[pos].permission == 'w' || capability_list[i].list[pos].permission == 'a' )
+								{
+									access = 0;
+		                            current_file = filename;
+    		                        while( !access )
+        		                    {
+            		                    pthread_mutex_lock( &lock_operated_file );
+                		                if( files_status[current_file].status == '-' || files_status[current_file].status == 0 )
+                    		            {
+                        		            files_status[current_file].status = 'w';
+                            		        pthread_mutex_unlock( &lock_operated_file );
+
+	                                	    memset( buffer_write, 0, MAX_BUFFER_LEN );
+    	                                	if( write_mode == 'o' )
+        	                                	sprintf( buffer_write, "cp cli/%s/%s srv", username, filename );
+	            	                        else if( write_mode == 'a' )
+    	            	                    {
+        	            	                    sprintf( buffer_write, "echo `cat cli/%s/%s` >> srv/%s", username, filename, filename );
+            	            	            }
+                	            	        system( buffer_write );
+
+	                                	    memset( buffer_write, 0, MAX_BUFFER_LEN );
+    	                                	sprintf( buffer_write + 3, "ls -l srv/%s ", filename );
+	    	                                write_all( fd, buffer_write );
+
+    	    	                            access = 1;
+        	    	                        pthread_mutex_lock( &lock_operated_file );
+            	    	                    files_status[current_file].status = '-';
+                	    	                pthread_mutex_unlock( &lock_operated_file );
+                    	    	        }
+                        	    	    else
+                            	    	{
+                                	    	pthread_mutex_unlock( &lock_operated_file );
+	                                    	sleep( 1 );
+		                                    continue;
+    		                            }
+        		                    }
+
+								}
+								else
+		                        {
+		                            memset( buffer_write, 0, MAX_BUFFER_LEN );
+        		                    sprintf( buffer_write + 3, "echo \" [C] You did not get the permission ! \"" );
+                		            write_all( fd, buffer_write );
+                        		}
+								break;
+							}
+						}
+/*						memset( buffer_write, 0, MAX_BUFFER_LEN );
 						sprintf( buffer_write, "srv/.%s", filename );
+	                    pthread_mutex_lock( &lock_fopen );
 						if( ( current_operated_file = fopen( buffer_write, "r" ) ) == 0 )
 						{
     	                    fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
@@ -255,6 +518,9 @@ void *srv_to_cli( void *args )
 						memset( permission, 0, MAX_PERMISSION_LEN );
 						fscanf( current_operated_file, "%s %s %d", permission, owner, &file_group );
 						fclose( current_operated_file );
+	                    pthread_mutex_unlock( &lock_fopen );
+
+						
 
 						if( ( ( strncmp( username, owner, strlen( owner ) ) == 0 ) && ( permission[1] == 'w' ) ) ||
 							( ( group == file_group ) && ( permission[3] == 'w' ) ) ||
@@ -273,6 +539,10 @@ void *srv_to_cli( void *args )
 			                        memset( buffer_write, 0, MAX_BUFFER_LEN );
 									if( write_mode == 'o' )
 				                        sprintf( buffer_write, "cp cli/%s/%s srv", username, filename );
+									else if( write_mode == 'a' )
+									{
+										sprintf( buffer_write, "echo `cat cli/%s/%s` >> srv/%s", username, filename, filename );
+									}
 									system( buffer_write );
 
 									memset( buffer_write, 0, MAX_BUFFER_LEN );
@@ -297,7 +567,7 @@ void *srv_to_cli( void *args )
 							memset( buffer_write, 0, MAX_BUFFER_LEN );
 							sprintf( buffer_write + 3, "echo \" [C] You did not get the permission ! \"" );
 							write_all( fd, buffer_write ); 
-						}
+						}*/
 					}
 					else
 					{
@@ -312,29 +582,287 @@ void *srv_to_cli( void *args )
                     sprintf( buffer_write +3, "echo [C] Wrong command " );
                     write_all( fd, buffer_write );
                 }
+				break;
+				//change
+				case 3:
+					temp = strtok( NULL, " \t\n\0" );
+					if( temp != NULL )
+					{
+						memset( filename, 0, MAX_FILENAME_LEN );
+						strncpy( filename, temp, MAX_FILENAME_LEN );
 
+						temp = strtok( NULL, " \t\n\0" );
+						if( temp != NULL )
+						{
+							memset( permission, 0, MAX_PERMISSION_LEN );
+							strncpy( permission, temp, MAX_PERMISSION_LEN );
+
+							memset( buffer_write, 0, MAX_BUFFER_LEN );
+							sprintf( buffer_write, "srv/.%s", filename );
+		                    pthread_mutex_lock( &lock_fopen );
+							if( ( current_operated_file = fopen( buffer_write, "r" ) ) == 0 )
+							{
+								fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
+						        perror("");
+						        exit( 1 );
+							}
+
+							memset( owner, 0, MAX_USERNAME_LEN );
+							fscanf( current_operated_file, "%*s %s %d", owner, &file_group );
+							fclose( current_operated_file );
+		                    pthread_mutex_unlock( &lock_fopen );
+
+							for( int i = 0, pos = -1 ; i < MAX_CLIENT_NUM ; i++ )
+							{
+								if( capability_list[i].group != -1 && capability_list[i].myself( username ) && ( pos = capability_list[i].search( filename ) ) != -1 )
+								{
+									access = 0;
+                                	current_file = filename;
+                            	    while( !access )
+                        	        {
+                    	                pthread_mutex_lock( &lock_operated_file );
+                	                    if( files_status[current_file].status == '-' || files_status[current_file].status == 0 )
+            	                        {
+        	                                files_status[current_file].status = 'c';
+    	                                    pthread_mutex_unlock( &lock_operated_file );
+
+	                                        memset( buffer_write, 0, MAX_BUFFER_LEN );
+                                        	sprintf( buffer_write, "srv/.%s", filename );
+                                    	    pthread_mutex_lock( &lock_fopen );
+                                	        if( ( current_operated_file = fopen( buffer_write, "w" ) ) == 0 )
+                            	            {
+                        	                    fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
+                    	                        perror("");
+                	                            exit( 1 );
+            	                            }
+        	                                fprintf( current_operated_file, "%s %s %d\n", permission, username, group );
+    	                                    fclose( current_operated_file );
+	                                        pthread_mutex_unlock( &lock_fopen );
+
+                                        	access = 1;
+                                    	    pthread_mutex_lock( &lock_operated_file );
+                                	        files_status[current_file].status = '-';
+                            	            pthread_mutex_unlock( &lock_operated_file );
+                        	            }
+                    	                else
+            	                        {
+                	                        pthread_mutex_unlock( &lock_operated_file );
+        	                                sleep( 1 );
+    	                                }
+	                                }
+
+									memset( buffer_write, 0, MAX_BUFFER_LEN );
+    	                            sprintf( buffer_write + 3, "cat srv/.%s ", filename );
+	                                write_all( fd, buffer_write );
+
+									for( int i1 = 0, pos1 = -1 ; i1 < MAX_CLIENT_NUM ; i1++ )
+									{puts(capability_list[i1].username);cout<<capability_list[i1].group<<endl;
+										if( capability_list[i1].group != -1 )
+										{
+											if( pos1 = capability_list[i1].search( filename ) != -1 )
+											{
+												if( capability_list[i1].myself( username ) )
+			                                    {
+    	    		                                if( permission[0] == 'r' && permission[1] == 'w' )
+        	        		                            capability_list[i1].list[pos1].permission = 'a';
+            	            		                else if( permission[0] == 'r' )
+                	                		            capability_list[i1].list[pos1].permission = 'r';
+                    	                    		else if( permission[1] == 'w' )
+		                	                            capability_list[i1].list[pos1].permission = 'w';
+        		            	                    else
+                		        	                    capability_list[i1].list[pos1].permission = 'c';
+                        		    	        }
+                                			    if( capability_list[i1].group == group && !capability_list[i1].myself( username ) )
+		                                    	{	
+        		                                	if( permission[2] == 'r' && permission[3] == 'w' )
+                		                            	capability_list[i1].list[pos1].permission = 'a';
+	                        		                else if( permission[2] == 'r' )
+    	                            		            capability_list[i1].list[pos1].permission = 'r';
+        	                                		else if( permission[3] == 'w' )
+		    	                                        capability_list[i1].list[pos1].permission = 'w';
+													else
+														capability_list[i1].list.erase( capability_list[i1].list.begin() + pos1 );
+        		        	                    }
+                		    	                if( capability_list[i1].group != group )
+                        			            {
+                                			        if( permission[4] == 'r' && permission[5] == 'w' )
+                                        			    capability_list[i1].list[pos1].permission = 'a';
+		                                    	    else if( permission[4] == 'r' )
+        		                                	    capability_list[i1].list[pos1].permission = 'r';
+	                		                        else if( permission[5] == 'w' )
+    	                    		                    capability_list[i1].list[pos1].permission = 'w';
+        	                                        else
+            	                                        capability_list[i1].list.erase( capability_list[i].list.begin() + pos1 );
+
+	                                		    }
+											}
+											else
+											{
+                                                if( capability_list[i1].group == group && !capability_list[i1].myself( username ) )
+                                                {   
+                                                    if( permission[2] == 'r' && permission[3] == 'w' )
+                                                        capability_list[i1].push( filename, 'a');
+                                                    else if( permission[2] == 'r' )
+                                                        capability_list[i1].push( filename, 'r');
+                                                    else if( permission[3] == 'w' )
+                                                        capability_list[i1].push( filename, 'w');
+                                                }
+                                                if( capability_list[i1].group != group )
+                                                {
+                                                    if( permission[4] == 'r' && permission[5] == 'w' )
+                                                        capability_list[i1].push( filename, 'a');
+                                                    else if( permission[4] == 'r' )
+                                                        capability_list[i1].push( filename, 'r');
+                                                    else if( permission[5] == 'w' )
+														capability_list[i1].push( filename, 'w');
+                                                }
+											}
+										}
+									}
+									break;
+								}
+							}
+/*							if( strncmp( username, owner, strlen( username ) ) == 0 )
+							{ 
+								access = 0;
+								current_file = filename;
+								while( !access )
+								{
+									pthread_mutex_lock( &lock_operated_file );
+									if( files_status[current_file].status == '-' || files_status[current_file].status == 0 )
+									{
+										files_status[current_file].status = 'c';
+										pthread_mutex_unlock( &lock_operated_file );
+
+										memset( buffer_write, 0, MAX_BUFFER_LEN );
+										sprintf( buffer_write, "srv/.%s", filename );
+					                    pthread_mutex_lock( &lock_fopen );
+										if( ( current_operated_file = fopen( buffer_write, "w" ) ) == 0 )
+										{
+			                                fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
+            			                    perror("");
+                        			        exit( 1 );
+                           				}
+										fprintf( current_operated_file, "%s %s %d\n", permission, username, group );
+										fclose( current_operated_file );
+					                    pthread_mutex_unlock( &lock_fopen );
+
+										access = 1;
+										pthread_mutex_lock( &lock_operated_file );
+										files_status[current_file].status = '-';
+										pthread_mutex_unlock( &lock_operated_file );
+									}
+									else
+									{
+										pthread_mutex_unlock( &lock_operated_file );
+										sleep( 1 );
+									}
+								}
+
+								memset( buffer_write, 0, MAX_BUFFER_LEN );
+								sprintf( buffer_write + 3, "cat srv/.%s ", filename );
+								write_all( fd, buffer_write );
+							}
+							else
+							{
+								memset( buffer_write, 0, MAX_BUFFER_LEN );
+    	                        sprintf( buffer_write + 3, "echo \" [C] You did not get the permission ! \"" );
+	                            write_all( fd, buffer_write );
+							}*/
+						}
+						else
+	                    {
+    	                    memset( buffer_write, 0, MAX_BUFFER_LEN );
+        	                sprintf( buffer_write + 3, "echo [C] Wrong command " );
+            	            write_all( fd, buffer_write );
+                	    }
+					}
+					else
+					{
+						memset( buffer_write, 0, MAX_BUFFER_LEN );
+						sprintf( buffer_write + 3, "echo [C] Wrong command " );
+						write_all( fd, buffer_write );
+					}
+				break;
+				//information
+				case 4:
+					temp = strtok( NULL, " \t\n\0" );					
+					if( temp != NULL )
+					{
+						memset( filename, 0, MAX_FILENAME_LEN );
+						strncpy( filename, temp, MAX_FILENAME_LEN );
+
+						memset( permission, 0, MAX_PERMISSION_LEN );
+						memset( owner, 0, MAX_USERNAME_LEN );
+						memset( buffer_write, 0, MAX_BUFFER_LEN );
+						sprintf( buffer_write, "srv/.%s", filename );
+	                    pthread_mutex_lock( &lock_fopen );
+						if( ( current_operated_file = fopen( buffer_write, "r" ) ) == 0 )
+						{
+							fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
+	                        perror("");
+    	                    exit( 1 );
+						}
+
+						fscanf( current_operated_file, "%s %s %d", permission, owner, &file_group );
+						fclose( current_operated_file );
+	                    pthread_mutex_unlock( &lock_fopen );
+
+						memset( buffer_write, 0, MAX_BUFFER_LEN );
+						memset( buffer_read, 0, MAX_BUFFER_LEN );
+
+						switch( file_group )
+						{
+						case 0:
+							sprintf( buffer_read, "AOS_students" );
+							break;
+						case 1:
+                            sprintf( buffer_read, "CSE_students" );
+                            break;
+						default:
+                            sprintf( buffer_read, "other_students" );
+						}
+
+						sprintf( buffer_write + 3, "echo %s %s %s `ls -l srv/%s | cut -d\" \"  -f1-4,10 --complement` %s ", permission, owner, buffer_read, filename, filename );
+						write_all( fd, buffer_write );
+					}
+					else
+					{
+                        memset( buffer_write, 0, MAX_BUFFER_LEN );
+                        sprintf( buffer_write + 3, "echo [C] Wrong command " );
+                        write_all( fd, buffer_write );
+                    }
+				break;
+				case 5:
+					close( fd );
+					cout << " [S] User \"" << username << "\" left from the system " << endl;
+					pthread_exit( NULL );
 				break;
 			default :
 				cout << " [S] Unknown command " << endl;
 			}
-		}
-		while( temp != NULL )
-		{
-			puts( temp );
-			temp = strtok( NULL, " \t\n\0" );
 		}
 		
 	}
 }
 
 int main()
-{
+{/*
+	FILE *x;
+	x = popen("ls srv", "r");
+
+	char ab[2048];
+	memset( ab,0,2048);
+	while( fscanf( x, "%s", ab) == 1 )
+		puts(ab);
+	fclose( x );
+	exit(0);*/
 	system("clear");
 	// for user to select the execution role
 	int option;
 
 	cout << " * Welcome to the System " << endl
-		 << " * please select the role " << endl
+		 << " * please select your role " << endl
 		 << " * [0] for SERVER " << endl
 		 << " * [1] for CLIENT " << endl
 		 << " > ";
@@ -344,6 +872,7 @@ int main()
 	uint16_t srv_port;
 	string srv_ip;
 
+	pthread_mutex_init( &lock_fopen, NULL );
 	pthread_mutex_init( &lock_user_list, NULL );
 	pthread_mutex_init( &lock_operated_file, NULL );
 	switch( option )
@@ -436,18 +965,21 @@ void run_cli( string srv_ip, uint16_t srv_port )
 		break;
 	}
 
+	cout << " > ";
 	while( fgets( buffer_write + 3, MAX_BUFFER_LEN - 1, stdin ) )
 	{
 		write_all( fd, buffer_write );
+		if( strncmp( buffer_write + 3, "bye", 3 ) == 0 )
+			break;
 		memset( buffer_write, 0, MAX_BUFFER_LEN );
 
 		read_all( fd, buffer_read );
-		puts(buffer_read + 3);
 		system( buffer_read + 3 );
+		cout << " > ";
 	}
-	puts( "HI I'm Client.");
 
 	close( fd );
+	cout << " [C] Bye, " << username << endl;
 }
 
 void write_all( int fd, char buffer_write[] )
@@ -499,14 +1031,91 @@ int identify_command( char *command )
         return 3;
 	else if( strncmp( command, "information", 11 ) == 0 )
         return 4;
+	else if( strncmp( command, "bye", 3 ) == 0 )
+		return 5;
 	else
 		return -1;
 }
 
 void run_srv( uint16_t srv_port )
 {
-    system( "clear" );
-    cout << " [S] Run as Server " << endl;
+	for( int i = 0 ; i < MAX_CLIENT_NUM ; i++ )
+		capability_list[i].group = -1;
+	system( "clear" );
+	FILE *file, *file1;
+	if( ( file = fopen( "srv/user_list", "r" ) ) == 0 )
+	{
+	    fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
+        perror("");
+        exit( 1 );
+    }
+
+	char buffer[MAX_BUFFER_LEN], buffer1[MAX_BUFFER_LEN], buffer2[MAX_BUFFER_LEN];
+	int temp_i;
+	usernum = 0;
+
+	memset( buffer, 0, MAX_BUFFER_LEN );
+
+	while( fscanf( file, "%d %s", &temp_i, buffer ) == 2 )
+	{
+		capability_list[usernum++].set( buffer, temp_i );
+		memset( buffer, 0, MAX_BUFFER_LEN );
+	}
+	fclose( file );
+
+	if( ( ( file = popen( "cd srv;ls .[^.]*", "r" ) ) == 0 ) || ( ( file1 = popen( "cat `ls srv/.[^.]*`", "r" ) ) == 0 ) )
+	{
+        fprintf( stderr, "\n [ERR] %s() : line_%d : ", __FUNCTION__, __LINE__ - 2 );
+        perror("");
+        exit( 1 );
+    }
+
+	memset( buffer, 0, MAX_BUFFER_LEN );
+	char temp_c;
+	while( fscanf( file, "%s", buffer ) == 1 )
+	{
+		puts(buffer);
+		memset( buffer1, 0, MAX_BUFFER_LEN );memset( buffer2, 0, MAX_BUFFER_LEN );
+		fscanf( file1, "%s %s %d", buffer1, buffer2, &temp_i );
+		cout << buffer1 << " " << buffer2 << " " << temp_i << endl;
+		temp_c = 0;
+		for( int i = 0 ; i < usernum ; i++ )
+		{
+			if( strncmp( capability_list[i].username, buffer2, strlen( buffer2 ) ) == 0 )
+            {
+                if( buffer1[0] == 'r' && buffer1[1] == 'w' )
+                    capability_list[i].push( buffer + 1, 'a' );
+                else if( buffer1[0] == 'r' )
+                    capability_list[i].push( buffer + 1, 'r');
+                else if( buffer1[1] == 'w' )
+                    capability_list[i].push( buffer + 1, 'w');
+				else
+                    capability_list[i].push( buffer + 1, 'c');
+            }
+			if( capability_list[i].group == temp_i && ( strncmp( capability_list[i].username, buffer2, strlen( buffer2 ) ) != 0 ) )
+	        {
+    	        if( buffer1[2] == 'r' && buffer1[3] == 'w' )
+                    capability_list[i].push( buffer + 1, 'a');
+                else if( buffer1[2] == 'r' )
+                    capability_list[i].push( buffer + 1, 'r');
+              	else if( buffer1[3] == 'w' )
+                    capability_list[i].push( buffer + 1, 'w');
+			}
+			if( capability_list[i].group != temp_i )
+			{
+                if( buffer1[4] == 'r' && buffer1[5] == 'w' )
+                    capability_list[i].push( buffer + 1, 'a');
+                else if( buffer1[4] == 'r' )
+                    capability_list[i].push( buffer + 1, 'r');
+                else if( buffer1[5] == 'w' )
+                    capability_list[i].push( buffer + 1, 'w');
+			}
+		}
+		memset( buffer, 0, MAX_BUFFER_LEN );
+	}
+	fclose( file );
+	fclose( file1 );
+    cout << " [B] Run as Server " << endl;
 
     //create listenning socket
     struct sockaddr_in srv, cli;
@@ -523,7 +1132,7 @@ void run_srv( uint16_t srv_port )
     srv.sin_family = AF_INET;
     srv.sin_addr.s_addr = htonl( INADDR_ANY );
     srv.sin_port = htons( srv_port );
-	puts("bind");
+	puts(" [B] bind");
     //bind
     if( bind( listen_fd, ( struct sockaddr* ) &srv, sizeof( srv ) ) < 0 )
     {
@@ -531,7 +1140,7 @@ void run_srv( uint16_t srv_port )
         perror("");
         exit( 1 );
     }
-	puts("listen");
+	puts(" [B] listen");
     //listen
     if( listen( listen_fd, 5 ) == -1 )
     {
@@ -546,7 +1155,7 @@ void run_srv( uint16_t srv_port )
 
     while( 1 )
     {
-		puts("accept");
+		puts(" [B] accept");
         //accept
         if( ( connect_fd = accept( listen_fd, ( struct sockaddr* ) &cli, &cli_len ) ) == -1 )
         {
@@ -555,7 +1164,7 @@ void run_srv( uint16_t srv_port )
             exit( 1 );
         }
 
-		puts("create threads");
+		puts(" [B] create threads");
 		//create threads
 		if( ( pthread_create( &threadId_of_cli[current_clients_num], NULL, srv_to_cli, ( void * )&connect_fd ) ) != 0 )
 		{
